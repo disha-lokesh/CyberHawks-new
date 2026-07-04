@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Runtime / job data — never commit case evidence or generated artifacts
+backend/data/artifacts/
+backend/data/uploads/
+backend/data/reports/
+backend/data/logs/
+backend/.env
+
+# Trained model + training data (generated locally, not committed)
+backend/ml/models/*.pkl
+backend/ml/models/*.json
+!backend/ml/models/.gitkeep
+backend/ml/datasets/*/
+
+# OS
+.DS_Store
+
+# Frontend
+node_modules/
+frontend/dist/
+*.DS_Store

@@ -1,0 +1,12 @@
+{
+    "schema_version": "1.0",
+    "description": "Seed IOC database for known command-and-control infrastructure. POPULATE FROM REAL THREAT INTEL ONLY (e.g. internal case data, CERT-In advisories, MISP, abuse.ch). Do not invent indicators — this is forensic evidence used in court. Empty arrays are valid and simply mean 'no seed IOCs yet'.",
+    "domains": [],
+    "ip_addresses": [],
+    "urls": [],
+    "telegram_handles": [],
+    "_example_entry": {
+      "domain": {"value": "example-c2.duckdns.org", "family": "banking_trojan", "first_seen": "2025-01-01", "source": "CERT-In advisory XYZ", "confidence": "high"},
+      "ip": {"value": "203.0.113.45", "port": 8443, "family": "rat", "first_seen": "2025-01-01", "source": "internal case 2025-001", "confidence": "medium"}
+    }
+  }

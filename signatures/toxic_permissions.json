@@ -1,0 +1,133 @@
+{
+    "schema_version": "1.0",
+    "description": "Android permission risk weights and toxic permission combinations used by permission_scorer.py. Single permissions carry a base weight; combinations ('toxic combos') that together indicate a known malware behaviour carry a higher combo weight. All data here is derived from the public Android permission reference and well-documented malware TTPs.",
+    "single_permissions": {
+      "android.permission.SEND_SMS": 4,
+      "android.permission.RECEIVE_SMS": 4,
+      "android.permission.READ_SMS": 4,
+      "android.permission.WRITE_SMS": 3,
+      "android.permission.RECEIVE_MMS": 2,
+      "android.permission.READ_CONTACTS": 3,
+      "android.permission.WRITE_CONTACTS": 2,
+      "android.permission.READ_CALL_LOG": 4,
+      "android.permission.WRITE_CALL_LOG": 3,
+      "android.permission.PROCESS_OUTGOING_CALLS": 3,
+      "android.permission.CALL_PHONE": 3,
+      "android.permission.READ_PHONE_STATE": 2,
+      "android.permission.READ_PHONE_NUMBERS": 2,
+      "android.permission.SYSTEM_ALERT_WINDOW": 4,
+      "android.permission.BIND_ACCESSIBILITY_SERVICE": 5,
+      "android.permission.BIND_DEVICE_ADMIN": 5,
+      "android.permission.REQUEST_INSTALL_PACKAGES": 4,
+      "android.permission.QUERY_ALL_PACKAGES": 2,
+      "android.permission.RECEIVE_BOOT_COMPLETED": 2,
+      "android.permission.FOREGROUND_SERVICE": 1,
+      "android.permission.WAKE_LOCK": 1,
+      "android.permission.DISABLE_KEYGUARD": 2,
+      "android.permission.GET_TASKS": 3,
+      "android.permission.PACKAGE_USAGE_STATS": 3,
+      "android.permission.RECORD_AUDIO": 3,
+      "android.permission.CAMERA": 2,
+      "android.permission.ACCESS_FINE_LOCATION": 2,
+      "android.permission.ACCESS_BACKGROUND_LOCATION": 3,
+      "android.permission.READ_EXTERNAL_STORAGE": 2,
+      "android.permission.WRITE_EXTERNAL_STORAGE": 2,
+      "android.permission.READ_MEDIA_IMAGES": 2,
+      "android.permission.MANAGE_EXTERNAL_STORAGE": 4,
+      "android.permission.INTERNET": 1,
+      "android.permission.ACCESS_NETWORK_STATE": 0,
+      "android.permission.WRITE_SETTINGS": 2,
+      "android.permission.CHANGE_NETWORK_STATE": 1,
+      "android.permission.READ_CALENDAR": 1,
+      "android.permission.GET_ACCOUNTS": 2
+    },
+    "toxic_combinations": [
+      {
+        "id": "combo_banking_trojan_sms",
+        "name": "SMS interception + boot persistence + exfil",
+        "family": "banking_trojan",
+        "permissions": [
+          "android.permission.READ_SMS",
+          "android.permission.RECEIVE_SMS",
+          "android.permission.INTERNET",
+          "android.permission.RECEIVE_BOOT_COMPLETED"
+        ],
+        "weight": 9,
+        "rationale": "Reads/intercepts incoming SMS (OTPs), survives reboot, and has network egress to forward stolen codes."
+      },
+      {
+        "id": "combo_otp_forwarding",
+        "name": "OTP read + outbound SMS",
+        "family": "banking_trojan",
+        "permissions": [
+          "android.permission.READ_SMS",
+          "android.permission.SEND_SMS",
+          "android.permission.INTERNET"
+        ],
+        "weight": 8,
+        "rationale": "Classic OTP-stealer: silently reads incoming OTP and re-sends it to an attacker number or server."
+      },
+      {
+        "id": "combo_accessibility_overlay",
+        "name": "Accessibility + overlay control",
+        "family": "rat",
+        "permissions": [
+          "android.permission.BIND_ACCESSIBILITY_SERVICE",
+          "android.permission.SYSTEM_ALERT_WINDOW",
+          "android.permission.INTERNET"
+        ],
+        "weight": 10,
+        "rationale": "Accessibility abuse plus screen overlays enables remote UI control, auto-grant of permissions, and credential phishing."
+      },
+      {
+        "id": "combo_loan_app_harvest",
+        "name": "Contact + call log + media harvest",
+        "family": "fake_loan",
+        "permissions": [
+          "android.permission.READ_CONTACTS",
+          "android.permission.READ_CALL_LOG",
+          "android.permission.READ_EXTERNAL_STORAGE",
+          "android.permission.INTERNET"
+        ],
+        "weight": 8,
+        "rationale": "Bulk harvest of contacts, call logs and gallery for harassment-based loan recovery."
+      },
+      {
+        "id": "combo_device_admin_persistence",
+        "name": "Device admin + boot + hide",
+        "family": "rat",
+        "permissions": [
+          "android.permission.BIND_DEVICE_ADMIN",
+          "android.permission.RECEIVE_BOOT_COMPLETED",
+          "android.permission.DISABLE_KEYGUARD"
+        ],
+        "weight": 8,
+        "rationale": "Device-admin lock-in resists uninstall, auto-starts, and can bypass keyguard."
+      },
+      {
+        "id": "combo_dropper_install",
+        "name": "Package install + unknown sources",
+        "family": "dropper",
+        "permissions": [
+          "android.permission.REQUEST_INSTALL_PACKAGES",
+          "android.permission.READ_EXTERNAL_STORAGE",
+          "android.permission.INTERNET"
+        ],
+        "weight": 7,
+        "rationale": "Downloads and side-loads a second-stage payload."
+      },
+      {
+        "id": "combo_spyware_surveillance",
+        "name": "Mic + camera + location + network",
+        "family": "spyware",
+        "permissions": [
+          "android.permission.RECORD_AUDIO",
+          "android.permission.CAMERA",
+          "android.permission.ACCESS_FINE_LOCATION",
+          "android.permission.INTERNET"
+        ],
+        "weight": 8,
+        "rationale": "Full ambient surveillance capability with exfiltration."
+      }
+    ]
+  }

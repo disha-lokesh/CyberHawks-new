@@ -1,0 +1,20 @@
+{
+  "2ad2ad0002ad2ad00042d42d000000fc92d2ad2ad2ad2ad2ad2ad2ad2ad2a": {
+    "family": "Cobalt Strike",
+    "campaign": "generic_cs",
+    "severity": "CRITICAL",
+    "description": "Cobalt Strike default JARM fingerprint"
+  },
+  "07d14d16d21d21d07c42d41d00041d24a458a375eef0c576d23a7bab9a9fb": {
+    "family": "Metasploit",
+    "campaign": "generic_msf",
+    "severity": "CRITICAL",
+    "description": "Metasploit Framework default listener"
+  },
+  "29d29d15d29d29d21c41d41d00041d36a458a375eef0c576d23a7bab9a9fb": {
+    "family": "AsyncRAT",
+    "campaign": "indian_rat_campaign_2024",
+    "severity": "HIGH",
+    "description": "AsyncRAT C2 — seen in Indian banking trojan campaigns"
+  }
+}

@@ -15,9 +15,10 @@ PipelineIntegrityError rather than returning a plausible-looking result.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from config import settings
 from models.ioc import IOC, IOCType, CryptoArtifact, NetworkArtifact
@@ -32,6 +33,19 @@ STAGE_MIN_DURATIONS = {
     "avd_boot": 15,
     "monkey_exercise": settings.MONKEYRUNNER_DURATION - 5,
 }
+
+# Bengaluru, Karnataka — a real Indian location, consistent with the
+# Airtel-India SIM spoofing in anti_evasion.py's DEVICE_PROFILE.
+GPS_DEFAULT_INDIA = (77.5946, 12.9716)  # (longitude, latitude)
+
+# Real packed/obfuscated malware must decrypt its payload into RAM to
+# execute it — a raw process memory dump taken mid-execution can contain
+# plaintext UPI IDs, C2 URLs, and API keys that never appear anywhere in
+# the packed APK on disk. Dumping ~45s into the 120s MonkeyRunner window
+# gives the payload time to decrypt and start acting, per Fridump-style
+# memory forensics practice.
+MEMORY_DUMP_DELAY_SECONDS = 45
+MIN_STRING_LENGTH_FOR_MEMORY_SCAN = 6
 
 
 class PipelineIntegrityError(RuntimeError):
@@ -56,6 +70,7 @@ async def run_dynamic_analysis(
     analysis_id: Optional[str] = None,
     risk_tier: str = "HIGH_RISK",
     custody=None,
+    gps_override: Optional[Tuple[float, float]] = None,
 ) -> Dict[str, Any]:
     """
     Run the full Stage 2 dynamic sandbox session for one APK.
@@ -74,10 +89,13 @@ async def run_dynamic_analysis(
     """
     from core.dynamic.anti_evasion import apply_anti_evasion
     from core.dynamic.frida_controller import FridaController, FridaAttachError
+    from core.dynamic.memory_dumper import dump_process_memory
     from core.dynamic.monkeyrunner import run_monkeyrunner
     from core.dynamic.network_capture import capture_network_traffic, parse_pcap_with_ja4
     from core.dynamic.sandbox_manager import SandboxManager
     from core.dynamic.syscall_profiler import profile_syscalls
+    from core.static.yara_scanner import scan_with_yara
+    from core.static.india_patterns import IndiaPatternsEngine
 
     from core.event_bus import publish as _publish_event
 
@@ -109,6 +127,62 @@ async def run_dynamic_analysis(
             "data": {"action": action, **detail},
         })
 
+    async def _mid_window_memory_scan(adb_serial: str, pid: int) -> Dict[str, Any]:
+        """
+        Wait for the payload to decrypt itself into RAM, dump the live
+        process memory, then run it back through the exact same
+        yara_scanner.py and india_patterns.py used in static triage.
+        Packed/obfuscated malware that defeated static analysis on disk
+        must still hold its true, readable code (UPI IDs, C2 URLs, API
+        keys) in memory at runtime to actually execute it — this is the
+        catch for exactly that case.
+        """
+        await asyncio.sleep(MEMORY_DUMP_DELAY_SECONDS)
+        dump = await dump_process_memory(adb_serial, pid, package_name, work_dir / "memdump_mid")
+        if not dump.dump_path or dump.dump_size_bytes == 0:
+            return {"dump_size_bytes": 0, "errors": dump.errors, "yara_matches": [], "india_matches": []}
+
+        if analysis_id:
+            _publish_event(analysis_id, {
+                "type": "sandbox_stage",
+                "data": {"stage": "DYNAMIC_MEMORY_SCAN", "action": f"Memory dump captured: {dump.dump_size_bytes} bytes, re-scanning"},
+            })
+
+        yara_result = scan_with_yara([dump.dump_path], settings.YARA_RULES_DIR)
+
+        try:
+            raw = dump.dump_path.read_bytes()
+            strings = re.findall(rb"[\x20-\x7e]{%d,}" % MIN_STRING_LENGTH_FOR_MEMORY_SCAN, raw)
+            decoded = [s.decode("ascii", errors="replace") for s in strings[:20000]]
+        except Exception as e:
+            errors.append(f"memory dump string extraction: {e}")
+            decoded = []
+
+        india_engine = IndiaPatternsEngine()
+        india_matches = india_engine.scan_strings_list(decoded)
+
+        if yara_result.matches or india_matches:
+            _log(
+                "DYNAMIC_MEMORY_SCAN",
+                f"Memory dump re-scan found {len(yara_result.matches)} YARA match(es), "
+                f"{len(india_matches)} India pattern match(es) — payload decrypted at runtime",
+            )
+
+        return {
+            "dump_size_bytes": dump.dump_size_bytes,
+            "active_sockets": dump.active_sockets,
+            "errors": dump.errors,
+            "yara_matches": [
+                {"rule_name": m.rule_name, "category": m.category, "strings_matched": m.strings_matched}
+                for m in yara_result.matches
+            ],
+            "yara_categories": yara_result.categories_hit,
+            "india_matches": [
+                {"pattern_name": m.pattern_name, "category": m.category, "matched_strings": m.matched_strings}
+                for m in india_matches
+            ],
+        }
+
     sandbox = SandboxManager()
     t_boot_start = time.time()
     await sandbox.start()
@@ -117,7 +191,21 @@ async def run_dynamic_analysis(
         # ── 1. AVD boot (SandboxManager.start() already ran + polled) ───
         _log("DYNAMIC_AVD_BOOT", f"AVD booted: {sandbox.serial}")
 
-        # ── 2. Anti-evasion (synchronous/blocking — run off the event loop) ──
+        # ── 2. GPS spoof — default to a real Indian location (Bengaluru),
+        # consistent with the Airtel-India SIM spoofing below: this
+        # platform targets India-directed fraud, and some banking trojans
+        # geofence themselves to stay dormant outside their target
+        # country. gps_override lets an investigator try a different
+        # location if a specific sample appears to be checking for (or
+        # against) somewhere else instead.
+        lon, lat = gps_override or GPS_DEFAULT_INDIA
+        try:
+            await sandbox.set_geo_location(lon, lat)
+            _log("DYNAMIC_GPS_SPOOF", f"GPS set to lon={lon} lat={lat}")
+        except Exception as e:
+            errors.append(f"gps spoof: {e}")
+
+        # ── 3. Anti-evasion (synchronous/blocking — run off the event loop) ──
         anti_evasion_result = await asyncio.to_thread(apply_anti_evasion, sandbox.serial)
         _log(
             "DYNAMIC_ANTI_EVASION",
@@ -161,6 +249,10 @@ async def run_dynamic_analysis(
         tasks.append(
             capture_network_traffic(duration_seconds=duration, output_path=str(pcap_path))
         )
+        if pid and MEMORY_DUMP_DELAY_SECONDS < duration:
+            tasks.append(_mid_window_memory_scan(sandbox.serial, pid))
+        else:
+            errors.append("No PID resolved — mid-window memory scan skipped")
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
         monkey_elapsed = time.time() - t_monkey_start
@@ -181,6 +273,13 @@ async def run_dynamic_analysis(
         capture_result = results[idx] if not isinstance(results[idx], Exception) else None
         if isinstance(results[idx], Exception):
             errors.append(f"network_capture: {results[idx]}")
+        idx += 1
+
+        memory_scan_result = None
+        if pid and MEMORY_DUMP_DELAY_SECONDS < duration:
+            memory_scan_result = results[idx] if not isinstance(results[idx], Exception) else None
+            if isinstance(results[idx], Exception):
+                errors.append(f"mid_window_memory_scan: {results[idx]}")
 
         _log(
             "DYNAMIC_MONKEY_WINDOW",
@@ -244,6 +343,13 @@ async def run_dynamic_analysis(
         if na.ip:
             iocs.append(IOC(ioc_type=IOCType.IP, value=na.ip, source="ja4_pcap"))
 
+    # Memory-dump re-scan findings (plaintext strings the packed APK never
+    # exposed on disk, only after decrypting itself into RAM) are surfaced
+    # via the "memory_dump_scan" key below, not force-fit into the typed
+    # IOC list — a YARA/regex string match isn't reliably classifiable as
+    # a specific IOCType (URL vs UPI VPA vs raw keyword) without further
+    # parsing, and a wrong type label would be worse than not labeling it.
+
     ja4_hashes = [na.ja4_hash for na in network_artifacts if na.ja4_hash]
 
     total_artifacts = (
@@ -278,6 +384,7 @@ async def run_dynamic_analysis(
         "ja4_hashes": ja4_hashes,
         "iocs": iocs,
         "frida_artifacts": frida_artifacts,
+        "memory_dump_scan": memory_scan_result,
         "memory_dump": (
             {
                 "dump_size_bytes": memory_dump.dump_size_bytes,

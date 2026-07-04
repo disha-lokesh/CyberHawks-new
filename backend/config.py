@@ -86,5 +86,12 @@ class Settings(BaseSettings):
     # ── India patterns ─────────────────────────────────────
     INDIA_PATTERN_COUNT: int = 47
 
+    # ── MobSF (optional automated scanner, local instance only) ────
+    # Empty MOBSF_URL disables the integration — matches every other
+    # optional external tool in this codebase (jadx, apktool, Ollama).
+    MOBSF_URL: str = ""            # e.g. "http://localhost:8000"
+    MOBSF_API_KEY: str = ""
+    MOBSF_TIMEOUT: int = 180       # seconds — MobSF static scans are slow
+
 
 settings = Settings()

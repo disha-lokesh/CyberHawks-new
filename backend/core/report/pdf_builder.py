@@ -328,6 +328,75 @@ def _section_code_analysis(styles, static) -> list:
             for match in static.yara.matches[:10]:
                 rows.append([match.rule_name, match.category, match.rule_file])
             elements.append(_table(rows))
+        if static.jadx and static.jadx.available:
+            j = static.jadx
+            elements.append(Spacer(1, 0.2*cm))
+            elements.append(Paragraph(
+                f"Source-Level SAST (JADX decompile, {j.files_scanned} files scanned):",
+                styles["SubHeader"]
+            ))
+            elements.append(Paragraph(
+                f"{len(j.hardcoded_ips)} hardcoded IP(s), {len(j.hardcoded_urls)} hardcoded URL(s), "
+                f"{len(j.suspicious_routes)} suspicious route(s), {len(j.secrets_found)} hardcoded "
+                f"secret(s) found in decompiled source.",
+                styles["Body"]
+            ))
+            if j.secrets_found:
+                rows = [["Type", "File", "Preview"]]
+                for s in j.secrets_found[:15]:
+                    rows.append([s["type"], s["file"], s["match_preview"]])
+                elements.append(_table(rows))
+        if static.config and static.config.anomalies:
+            elements.append(Spacer(1, 0.2*cm))
+            elements.append(Paragraph("Configuration Analysis (network_security_config / backup rules):", styles["SubHeader"]))
+            for reason in static.config.anomalies:
+                elements.append(Paragraph(f"• {reason}", styles["Body"]))
+        if static.dependencies and (static.dependencies.ad_sdks_detected or static.dependencies.analytics_sdks_detected):
+            elements.append(Spacer(1, 0.2*cm))
+            elements.append(Paragraph("Third-Party SDKs (Dependency Scan):", styles["SubHeader"]))
+            if static.dependencies.ad_sdks_detected:
+                elements.append(Paragraph(
+                    f"Ad-mediation SDKs: {', '.join(static.dependencies.ad_sdks_detected)}", styles["Body"]
+                ))
+            if static.dependencies.analytics_sdks_detected:
+                elements.append(Paragraph(
+                    f"Analytics SDKs: {', '.join(static.dependencies.analytics_sdks_detected)}", styles["Body"]
+                ))
+            for reason in static.dependencies.anomalies:
+                elements.append(Paragraph(f"• {reason}", styles["Body"]))
+        if static.ghidra and static.ghidra.available and static.ghidra.so_files_analyzed:
+            g = static.ghidra
+            elements.append(Spacer(1, 0.2*cm))
+            elements.append(Paragraph(
+                f"Native Code Decompilation (Ghidra, {len(g.so_files_analyzed)} .so file(s)):",
+                styles["SubHeader"]
+            ))
+            elements.append(Paragraph(
+                f"{len(g.hardcoded_ips)} hardcoded IP(s), {len(g.hardcoded_urls)} hardcoded URL(s), "
+                f"{len(g.secrets_found)} hardcoded secret(s) found in decompiled native pseudocode.",
+                styles["Body"]
+            ))
+            if g.secrets_found:
+                rows = [["Type", "File", "Preview"]]
+                for s in g.secrets_found[:15]:
+                    rows.append([s["type"], s["file"], s["match_preview"]])
+                elements.append(_table(rows))
+        if static.mobsf and static.mobsf.available:
+            mf = static.mobsf
+            elements.append(Spacer(1, 0.2*cm))
+            elements.append(Paragraph("MobSF Automated Scan:", styles["SubHeader"]))
+            elements.append(Paragraph(
+                f"MobSF security score: {mf.security_score if mf.security_score is not None else 'n/a'}/100, "
+                f"average CVSS: {mf.average_cvss if mf.average_cvss is not None else 'n/a'}. "
+                f"{len(mf.trackers_detected)} tracker(s), {len(mf.code_analysis_findings)} code-analysis "
+                f"finding(s) reported.",
+                styles["Body"]
+            ))
+            if mf.code_analysis_findings:
+                rows = [["Rule", "Severity", "Description"]]
+                for f_ in mf.code_analysis_findings[:15]:
+                    rows.append([f_["rule"], f_["severity"], f_["description"][:80]])
+                elements.append(_table(rows))
     elements.append(Spacer(1, 0.5*cm))
     return elements
 
@@ -519,9 +588,34 @@ def _section_risk(styles, static) -> list:
             ["India Fraud Pattern Matches", f"{rs.india_pattern_score:.1f}", "10"],
             ["Certificate Anomalies", f"{rs.cert_score:.1f}", "5"],
             ["Manifest Obfuscation", f"{rs.manifest_score:.1f}", "5"],
-            ["TOTAL", f"{rs.total:.1f}", "100"],
         ]
+        if rs.sast_score:
+            rows.append(["Hardcoded Secrets (Source SAST)", f"{rs.sast_score:.1f}", "10"])
+        if rs.config_score:
+            rows.append(["Configuration Anomalies (NSC/Backup)", f"{rs.config_score:.1f}", "5"])
+        if rs.dependency_score:
+            rows.append(["Ad-SDK Bundling Density", f"{rs.dependency_score:.1f}", "5"])
+        if rs.analysis_degraded:
+            rows.append(["Static Analysis Evasion Detected", "40.0", "40"])
+        rows.append(["TOTAL", f"{rs.total:.1f}", "100"])
         elements.append(_table(rows))
+
+        if rs.analysis_degraded:
+            elements.append(Spacer(1, 0.2*cm))
+            elements.append(Paragraph(
+                "STATIC ANALYSIS EVASION DETECTED",
+                ParagraphStyle("DegradedHeader", fontSize=11, fontName="Helvetica-Bold",
+                               textColor=colors.HexColor("#c0392b"), spaceAfter=4),
+            ))
+            elements.append(Paragraph(
+                "Static analysis failed to obtain a complete read of this application. "
+                "Severe code obfuscation or packing was detected. This is highly "
+                "indicative of deliberate evasion of forensic detection tooling.",
+                styles["Body"],
+            ))
+            for reason in rs.degradation_reasons:
+                elements.append(Paragraph(f"• {reason}", styles["Body"]))
+
         if rs.shap_features:
             elements.append(Spacer(1, 0.2*cm))
             elements.append(Paragraph("Top ML Features (SHAP Explainability):", styles["SubHeader"]))

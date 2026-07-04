@@ -96,8 +96,21 @@ class PipelineOrchestrator:
         try:
             await self._stage_static_triage()
 
-            tier = self.status.risk_score
-            if tier is not None and tier >= settings.RISK_HIGH_RISK_MIN and self.request.run_dynamic:
+            score = self.status.risk_score
+            degraded = bool(
+                self._static_result
+                and self._static_result.risk_score
+                and self._static_result.risk_score.analysis_degraded
+            )
+            # Escalate on score as usual, OR unconditionally when static
+            # analysis couldn't get a clean read on the APK — a fixed
+            # point boost isn't guaranteed to cross the threshold when
+            # every other component is near-zero (nothing else to score),
+            # which is exactly the case where dynamic observation matters
+            # most: we can't read it, so we have to watch it run instead.
+            if self.request.run_dynamic and (
+                (score is not None and score >= settings.RISK_HIGH_RISK_MIN) or degraded
+            ):
                 await self._stage_dynamic_analysis()
                 await self._stage_cloud_c2()
 
@@ -148,7 +161,38 @@ class PipelineOrchestrator:
             stage="STATIC_TRIAGE", action="Static analysis started", actor="system"
         )
 
-        result = await run_static_triage(self.apk_path, self.work_dir / "static")
+        try:
+            result = await run_static_triage(self.apk_path, self.work_dir / "static")
+        except Exception as e:
+            # run_static_triage() isolates each of its 8 analyzer steps
+            # internally, so reaching here means something outside that
+            # per-step handling broke (e.g. the APK couldn't even be
+            # opened/hashed). Belt-and-suspenders: never let a single
+            # APK's failure abort the whole pipeline. A sample that
+            # crashes static analysis outright is maximally suspicious,
+            # not a reason to stop — force escalation to dynamic analysis
+            # instead of silently reporting BENIGN.
+            logger.error(f"Static triage crashed entirely: {e}", exc_info=True)
+            self._static_result = None
+            self.status.risk_score = max(settings.RISK_HIGH_RISK_MIN, 70.0)
+            self.status.risk_tier = RiskTier.HIGH_RISK
+            self.custody.log(
+                stage="STATIC_TRIAGE",
+                action=f"Static analysis failed outright: {str(e)[:200]}. "
+                       f"Treated as a severe evasion signal — escalating to dynamic analysis.",
+                actor="system",
+            )
+            self._complete_stage(
+                PipelineStage.STATIC_TRIAGE,
+                artifacts={
+                    "risk_score": self.status.risk_score,
+                    "risk_tier": self.status.risk_tier,
+                    "static_analysis_failed": True,
+                    "error": str(e)[:500],
+                },
+            )
+            return
+
         self._static_result = result
 
         self.status.risk_score = result.risk_score.total if result.risk_score else 0.0
@@ -170,6 +214,7 @@ class PipelineOrchestrator:
                 "india_match_count": len(result.india_matches),
                 "ioc_count": len(result.iocs),
                 "ml_probability": result.risk_score.ml_probability if result.risk_score else 0.0,
+                "analysis_degraded": result.risk_score.analysis_degraded if result.risk_score else False,
             },
         )
 

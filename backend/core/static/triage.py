@@ -21,6 +21,11 @@ from core.static.certificate_parser import parse_certificate, CertificateResult
 from core.static.yara_scanner import scan_with_yara, YARAScanResult
 from core.static.india_patterns import IndiaPatternsEngine
 from core.static.ml_classifier import MLClassifier, FEATURE_NAMES
+from core.static.jadx_decompiler import decompile_and_scan, JadxResult
+from core.static.config_analyzer import analyze_configuration, ConfigAnalysisResult
+from core.static.dependency_scanner import scan_dependencies, DependencyScanResult, MULTI_AD_SDK_THRESHOLD
+from core.static.mobsf_scanner import run_mobsf_scan, MobSFResult
+from core.static.ghidra_analyzer import decompile_native_and_scan, GhidraResult
 from models.ioc import IOC, IOCType, IndiaPatternMatch, YARAMatch
 from models.risk_score import RiskScore, RiskTier, SCORE_COMPONENTS
 from utils.logger import get_logger
@@ -46,6 +51,11 @@ class StaticTriageResult:
     native: Optional[NativeAnalysisResult] = None
     cert: Optional[CertificateResult] = None
     yara: Optional[YARAScanResult] = None
+    jadx: Optional[JadxResult] = None
+    config: Optional[ConfigAnalysisResult] = None
+    dependencies: Optional[DependencyScanResult] = None
+    mobsf: Optional[MobSFResult] = None
+    ghidra: Optional[GhidraResult] = None
     india_matches: List[IndiaPatternMatch] = field(default_factory=list)
     iocs: List[IOC] = field(default_factory=list)
     risk_score: Optional[RiskScore] = None
@@ -57,7 +67,18 @@ class StaticTriageResult:
 
 
 async def run_static_triage(apk_path: Path, work_dir: Path) -> StaticTriageResult:
-    """Run all Stage 1 static analysis. Returns full triage result."""
+    """
+    Run all Stage 1 static analysis. Returns full triage result.
+
+    Every analyzer call below is individually isolated: a real hostile APK
+    (packed, malformed, or deliberately built to crash naive parsers) can
+    throw from any one of these 8 steps. Previously an exception from any
+    single step propagated out of this function uncaught, which aborted
+    the ENTIRE pipeline (pipeline.py's top-level handler marked the whole
+    job FAILED) instead of just that one analyzer's contribution. A
+    malware sample that crashes your parser is not a reason to stop
+    investigating it — it's evidence.
+    """
     start = time.time()
     result = StaticTriageResult(apk_path=apk_path)
     log_ram_snapshot("static_triage_start")
@@ -68,66 +89,176 @@ async def run_static_triage(apk_path: Path, work_dir: Path) -> StaticTriageResul
 
     # ── 1b. Unpack ──────────────────────────────────────────────────────
     logger.info("Stage 1b: APK unpack")
-    result.unpack = await unpack_apk(apk_path, work_dir / "unpack")
-    result.errors.extend(result.unpack.errors)
+    try:
+        result.unpack = await unpack_apk(apk_path, work_dir / "unpack")
+        result.errors.extend(result.unpack.errors)
+    except Exception as e:
+        logger.error(f"APK unpack crashed: {e}", exc_info=True)
+        result.errors.append(f"unpack: {e}")
+        result.unpack = APKUnpackResult(apk_path=apk_path, work_dir=work_dir / "unpack")
 
     # ── 1c. Manifest ────────────────────────────────────────────────────
     logger.info("Stage 1c: Manifest parse")
-    if result.unpack.manifest_path:
-        result.manifest = parse_manifest(result.unpack.manifest_path)
-        result.errors.extend(result.manifest.errors)
-    else:
-        logger.warning("No manifest available — skipping manifest parse")
+    try:
+        if result.unpack.manifest_path:
+            result.manifest = parse_manifest(result.unpack.manifest_path)
+            result.errors.extend(result.manifest.errors)
+        else:
+            logger.warning("No manifest available — skipping manifest parse")
+            result.errors.append("manifest: AndroidManifest.xml not found or unreadable")
+    except Exception as e:
+        logger.error(f"Manifest parse crashed: {e}", exc_info=True)
+        result.errors.append(f"manifest: {e}")
 
     # ── 1d. Permissions ─────────────────────────────────────────────────
-    if result.manifest:
-        result.permission_score, result.permission_reasons = score_permissions(
-            result.manifest.permissions
-        )
+    try:
+        if result.manifest:
+            result.permission_score, result.permission_reasons = score_permissions(
+                result.manifest.permissions
+            )
+    except Exception as e:
+        logger.error(f"Permission scoring crashed: {e}", exc_info=True)
+        result.errors.append(f"permissions: {e}")
 
     # ── 1e. Certificate ─────────────────────────────────────────────────
     logger.info("Stage 1e: Certificate parse")
-    result.cert = parse_certificate(apk_path)
-    result.errors.extend(result.cert.errors)
+    try:
+        result.cert = parse_certificate(apk_path)
+        result.errors.extend(result.cert.errors)
+    except Exception as e:
+        logger.error(f"Certificate parse crashed: {e}", exc_info=True)
+        result.errors.append(f"certificate: {e}")
 
     # ── 1f. DEX analysis ────────────────────────────────────────────────
     logger.info("Stage 1f: DEX analysis")
-    result.dex = analyze_dex(result.unpack.dex_files)
-    result.errors.extend(result.dex.errors)
+    try:
+        result.dex = analyze_dex(result.unpack.dex_files)
+        result.errors.extend(result.dex.errors)
+    except Exception as e:
+        logger.error(f"DEX analysis crashed: {e}", exc_info=True)
+        result.errors.append(f"dex: {e}")
 
     # ── 1g. Native .so analysis ─────────────────────────────────────────
     logger.info("Stage 1g: Native analysis")
-    result.native = analyze_native(result.unpack.so_files)
-    result.errors.extend(result.native.errors)
+    try:
+        result.native = analyze_native(result.unpack.so_files)
+        result.errors.extend(result.native.errors)
+    except Exception as e:
+        logger.error(f"Native analysis crashed: {e}", exc_info=True)
+        result.errors.append(f"native: {e}")
+
+    # ── 1g2. Configuration analysis (network_security_config, backup rules) ──
+    logger.info("Stage 1g2: Configuration analysis")
+    try:
+        raw_manifest_xml = result.manifest.raw_xml if result.manifest else ""
+        result.config = analyze_configuration(
+            result.unpack.decoded_dir if result.unpack else None, raw_manifest_xml
+        )
+        result.errors.extend(result.config.errors)
+    except Exception as e:
+        logger.error(f"Configuration analysis crashed: {e}", exc_info=True)
+        result.errors.append(f"config_analysis: {e}")
+
+    # ── 1g3. Dependency / third-party SDK scanning ──────────────────────
+    logger.info("Stage 1g3: Dependency scanning")
+    try:
+        class_names = result.dex.class_names if result.dex else []
+        result.dependencies = scan_dependencies(class_names)
+    except Exception as e:
+        logger.error(f"Dependency scanning crashed: {e}", exc_info=True)
+        result.errors.append(f"dependency_scan: {e}")
+
+    # ── 1g4. JADX decompilation + source-level SAST ─────────────────────
+    # Slower (up to 120s) and requires the optional jadx CLI — isolated in
+    # its own try/except like every other optional external tool here so
+    # its absence/failure never blocks the rest of static triage.
+    logger.info("Stage 1g4: JADX decompile + SAST")
+    try:
+        result.jadx = await decompile_and_scan(apk_path, work_dir)
+        result.errors.extend(result.jadx.errors)
+    except Exception as e:
+        logger.error(f"JADX decompile/SAST crashed: {e}", exc_info=True)
+        result.errors.append(f"jadx: {e}")
+
+    # ── 1g5. MobSF automated scan (optional, local instance only) ───────
+    logger.info("Stage 1g5: MobSF automated scan")
+    try:
+        result.mobsf = await run_mobsf_scan(apk_path)
+        result.errors.extend(result.mobsf.errors)
+    except Exception as e:
+        logger.error(f"MobSF scan crashed: {e}", exc_info=True)
+        result.errors.append(f"mobsf: {e}")
+
+    # ── 1g6. Ghidra headless native decompile + SAST ─────────────────────
+    # Slow (minutes per .so) and requires a Ghidra install — isolated the
+    # same way as jadx/MobSF so its absence never blocks the rest of
+    # static triage. Capped to a few of the smallest bundled .so files
+    # inside decompile_native_and_scan itself.
+    logger.info("Stage 1g6: Ghidra native decompile + SAST")
+    try:
+        result.ghidra = await decompile_native_and_scan(
+            result.unpack.so_files if result.unpack else [], work_dir
+        )
+        result.errors.extend(result.ghidra.errors)
+    except Exception as e:
+        logger.error(f"Ghidra native decompile crashed: {e}", exc_info=True)
+        result.errors.append(f"ghidra: {e}")
 
     # ── 1h. YARA scan ───────────────────────────────────────────────────
     logger.info("Stage 1h: YARA scan")
-    yara_targets = [apk_path] + result.unpack.dex_files[:3]
-    result.yara = scan_with_yara(yara_targets, settings.YARA_RULES_DIR)
-    result.errors.extend(result.yara.errors)
+    try:
+        yara_targets = [apk_path] + result.unpack.dex_files[:3]
+        result.yara = scan_with_yara(yara_targets, settings.YARA_RULES_DIR)
+        result.errors.extend(result.yara.errors)
+    except Exception as e:
+        logger.error(f"YARA scan crashed: {e}", exc_info=True)
+        result.errors.append(f"yara: {e}")
 
     # ── 1i. India patterns ──────────────────────────────────────────────
     logger.info("Stage 1i: India patterns (47)")
-    corpus_parts = []
-    if result.dex:
-        corpus_parts.extend(result.dex.all_strings[:5000])
-    if result.manifest:
-        corpus_parts.append(result.manifest.raw_xml)
-    result.india_matches = _pattern_engine.scan_strings_list(corpus_parts)
+    try:
+        corpus_parts = []
+        if result.dex:
+            corpus_parts.extend(result.dex.all_strings[:5000])
+        if result.manifest:
+            corpus_parts.append(result.manifest.raw_xml)
+        result.india_matches = _pattern_engine.scan_strings_list(corpus_parts)
+    except Exception as e:
+        logger.error(f"India pattern scan crashed: {e}", exc_info=True)
+        result.errors.append(f"india_patterns: {e}")
 
     # ── 1j. Feature vector ──────────────────────────────────────────────
     result.feature_vector = _build_feature_vector(result)
 
     # ── 1k. ML inference ────────────────────────────────────────────────
     logger.info("Stage 1k: ML inference")
-    _classifier.load()
-    ml_prob, shap_features = _classifier.predict(result.feature_vector)
+    try:
+        _classifier.load()
+        ml_prob, shap_features = _classifier.predict(result.feature_vector)
+    except Exception as e:
+        logger.error(f"ML inference crashed: {e}", exc_info=True)
+        result.errors.append(f"ml_classifier: {e}")
+        ml_prob, shap_features = 0.5, []
 
     # ── 1l. Risk score assembly ─────────────────────────────────────────
-    result.risk_score = _assemble_risk_score(result, ml_prob, shap_features)
+    # If static analysis meaningfully failed to read this APK (unpack
+    # failed outright, or DEX yielded almost nothing) that is itself a
+    # strong evasion signal — packers and heavy obfuscation exist
+    # specifically to defeat tools like this one. Score it as suspicious
+    # rather than silently reporting BENIGN because there was nothing to
+    # read, and force escalation to dynamic analysis so the sandbox gets
+    # a chance to observe it actually running.
+    analysis_degraded, degradation_reasons = _detect_analysis_degradation(result)
+    result.risk_score = _assemble_risk_score(
+        result, ml_prob, shap_features, analysis_degraded, degradation_reasons
+    )
 
     # ── IOC extraction ──────────────────────────────────────────────────
-    result.iocs = _extract_iocs(result)
+    try:
+        result.iocs = _extract_iocs(result)
+    except Exception as e:
+        logger.error(f"IOC extraction crashed: {e}", exc_info=True)
+        result.errors.append(f"iocs: {e}")
 
     result.elapsed_seconds = time.time() - start
     log_ram_snapshot("static_triage_end")
@@ -250,8 +381,50 @@ def _build_feature_vector(r: StaticTriageResult) -> List[float]:
     return fv
 
 
+# Applied when static analysis couldn't get a clean read on the APK —
+# packing/obfuscation specifically exists to defeat tools like this one,
+# so failure to read is evidence, not a null result. Large enough to push
+# a sample past the HIGH_RISK escalation threshold on its own so dynamic
+# analysis gets a chance to observe it actually running.
+STATIC_ANALYSIS_DEGRADATION_BOOST = 40.0
+
+# Below this many extracted strings, real-world APKs are virtually always
+# packed/encrypted rather than genuinely this sparse — androguard's own
+# string table typically yields thousands even for trivial apps.
+MIN_HEALTHY_STRING_COUNT = 50
+
+
+def _detect_analysis_degradation(r: StaticTriageResult) -> Tuple[bool, List[str]]:
+    """Detect signs that static analysis failed to get a real read on this
+    APK, which — for a packer/obfuscator built specifically to defeat
+    tools like this one — is itself a strong malicious-intent signal."""
+    reasons: List[str] = []
+
+    u = r.unpack
+    if not u or (not u.apktool_success and not u.dex_files and not u.so_files):
+        reasons.append("APK unpacking failed entirely — no DEX or native code could be extracted")
+
+    if r.dex and len(r.dex.all_strings) < MIN_HEALTHY_STRING_COUNT:
+        reasons.append(
+            f"DEX string extraction yielded only {len(r.dex.all_strings)} strings "
+            f"(healthy APKs typically yield thousands) — indicative of packing/encryption"
+        )
+
+    if not r.manifest or not r.manifest.package_name:
+        reasons.append("AndroidManifest.xml could not be parsed — package identity unknown")
+
+    if len(r.errors) >= 3:
+        reasons.append(f"{len(r.errors)} analyzer errors during static triage")
+
+    return len(reasons) > 0, reasons
+
+
 def _assemble_risk_score(
-    r: StaticTriageResult, ml_prob: float, shap_features
+    r: StaticTriageResult,
+    ml_prob: float,
+    shap_features,
+    analysis_degraded: bool = False,
+    degradation_reasons: Optional[List[str]] = None,
 ) -> RiskScore:
     """Compute final risk score from all component contributions."""
     m = r.manifest
@@ -272,10 +445,25 @@ def _assemble_risk_score(
     manifest_score = (
         (m.obfuscation_score / 5.0) * SCORE_COMPONENTS["manifest_obfuscation"] if m else 0.0
     )
+    degradation_score = STATIC_ANALYSIS_DEGRADATION_BOOST if analysis_degraded else 0.0
+
+    # Secondary code-review signals — these ride on top of the core
+    # 100-point budget (like degradation_score) rather than displacing it,
+    # since a hardcoded private key or a missing backup-exclusion rule is
+    # real evidence but shouldn't be weighted as heavily as an active
+    # banking-trojan/YARA hit.
+    sast_secret_count = (
+        (len(r.jadx.secrets_found) if r.jadx and r.jadx.available else 0)
+        + (len(r.ghidra.secrets_found) if r.ghidra and r.ghidra.available else 0)
+    )
+    sast_score = min(sast_secret_count * 3.0, 10.0)
+    config_score = r.config.anomaly_score if r.config else 0.0
+    dependency_score = r.dependencies.anomaly_score if r.dependencies else 0.0
 
     total = (
         ml_score + syscall_score + yara_score +
-        perm_score + india_score + cert_score + manifest_score
+        perm_score + india_score + cert_score + manifest_score +
+        degradation_score + sast_score + config_score + dependency_score
     )
     total = min(total, 100.0)
     tier = RiskScore.compute_tier(total)
@@ -290,14 +478,24 @@ def _assemble_risk_score(
         india_pattern_score=round(india_score, 2),
         cert_score=round(cert_score, 2),
         manifest_score=round(manifest_score, 2),
+        sast_score=round(sast_score, 2),
+        config_score=round(config_score, 2),
+        dependency_score=round(dependency_score, 2),
         ml_probability=round(ml_prob, 4),
         shap_features=shap_features or [],
+        analysis_degraded=analysis_degraded,
+        degradation_reasons=degradation_reasons or [],
         flags={
             "dynamic_loading": r.dex.dynamic_loading if r.dex else False,
             "reflection": r.dex.reflection_used if r.dex else False,
             "frida_detection": r.native.frida_detection if r.native else False,
             "emulator_detection": r.native.emulator_detection if r.native else False,
             "root_detection": r.native.root_detection if r.native else False,
+            "static_analysis_degraded": analysis_degraded,
+            "hardcoded_secrets_found": bool(r.jadx and r.jadx.secrets_found),
+            "cleartext_traffic_permitted": bool(r.config and (r.config.cleartext_permitted_globally or r.config.cleartext_permitted_domains)),
+            "trusts_user_added_cas": bool(r.config and r.config.trusts_user_added_cas),
+            "multi_ad_sdk_bundling": bool(r.dependencies and len(r.dependencies.ad_sdks_detected) >= MULTI_AD_SDK_THRESHOLD),
         },
     )
 
@@ -332,5 +530,36 @@ def _extract_iocs(r: StaticTriageResult) -> List[IOC]:
                 source="manifest",
             )
         )
+
+    if r.jadx and r.jadx.available:
+        existing_urls = {i.value for i in iocs if i.ioc_type == IOCType.URL}
+        existing_ips = {i.value for i in iocs if i.ioc_type == IOCType.IP}
+        for url in r.jadx.hardcoded_urls[:50]:
+            if url not in existing_urls:
+                iocs.append(IOC(ioc_type=IOCType.URL, value=url, source="jadx_sast"))
+                existing_urls.add(url)
+        for ip in r.jadx.hardcoded_ips[:30]:
+            if ip not in existing_ips:
+                iocs.append(IOC(ioc_type=IOCType.IP, value=ip, source="jadx_sast"))
+                existing_ips.add(ip)
+
+    if r.mobsf and r.mobsf.available:
+        existing_urls = {i.value for i in iocs if i.ioc_type == IOCType.URL}
+        for url in (r.mobsf.urls + r.mobsf.firebase_urls)[:50]:
+            if url not in existing_urls:
+                iocs.append(IOC(ioc_type=IOCType.URL, value=url, source="mobsf"))
+                existing_urls.add(url)
+
+    if r.ghidra and r.ghidra.available:
+        existing_urls = {i.value for i in iocs if i.ioc_type == IOCType.URL}
+        existing_ips = {i.value for i in iocs if i.ioc_type == IOCType.IP}
+        for url in r.ghidra.hardcoded_urls[:50]:
+            if url not in existing_urls:
+                iocs.append(IOC(ioc_type=IOCType.URL, value=url, source="ghidra_sast"))
+                existing_urls.add(url)
+        for ip in r.ghidra.hardcoded_ips[:30]:
+            if ip not in existing_ips:
+                iocs.append(IOC(ioc_type=IOCType.IP, value=ip, source="ghidra_sast"))
+                existing_ips.add(ip)
 
     return iocs

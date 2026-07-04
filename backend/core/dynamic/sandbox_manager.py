@@ -74,7 +74,7 @@ class SandboxManager:
         """Shut down AVD and free ~3GB RAM."""
         logger.info("Shutting down AVD...")
         try:
-            await self._adb("emu kill")
+            await self._adb_emu("kill")
         except Exception:
             pass
         if self._emulator_proc:
@@ -89,13 +89,24 @@ class SandboxManager:
 
     async def take_snapshot(self, name: str = SNAPSHOT_NAME) -> None:
         """Save clean state before APK install."""
-        await self._adb(f"emu avd snapshot save {name}")
+        await self._adb_emu("avd", "snapshot", "save", name)
         logger.info(f"Snapshot saved: {name}")
 
     async def restore_snapshot(self, name: str = SNAPSHOT_NAME) -> None:
         """Restore clean state after analysis."""
-        await self._adb(f"emu avd snapshot load {name}")
+        await self._adb_emu("avd", "snapshot", "load", name)
         logger.info(f"Snapshot restored: {name}")
+
+    async def set_geo_location(self, longitude: float, latitude: float) -> None:
+        """
+        Spoof GPS location via the emulator console (`adb emu geo fix`).
+        Some malware geofences itself — staying dormant unless the device
+        reports a location matching (or specifically not matching) its
+        target region — so being able to set this is a real anti-evasion
+        lever, not just device-property spoofing.
+        """
+        await self._adb_emu("geo", "fix", str(longitude), str(latitude))
+        logger.info(f"GPS spoofed: lon={longitude} lat={latitude}")
 
     async def install_apk(self, apk_path: Path) -> None:
         """Install APK onto running AVD."""
@@ -172,6 +183,25 @@ class SandboxManager:
     async def _adb(self, cmd: str) -> None:
         proc = await asyncio.create_subprocess_exec(
             ADB_BIN, "-s", self.serial, "shell", cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=30)
+
+    async def _adb_emu(self, *args: str) -> None:
+        """
+        Run an emulator CONSOLE command (`adb -s <serial> emu ...`) — NOT
+        the same as `adb shell`. `emu` connects directly to the emulator's
+        console port (parsed from the emulator-<port> serial) and is how
+        you talk to the AVD itself (snapshots, geo, power, kill), as
+        opposed to `shell` which runs a command inside the guest OS.
+        Passing an `emu` command through `adb shell` (the previous bug
+        here) runs a literal shell command called "emu" on the device,
+        which doesn't exist — snapshot save/restore and `emu kill` were
+        all silently no-ops.
+        """
+        proc = await asyncio.create_subprocess_exec(
+            ADB_BIN, "-s", self.serial, "emu", *args,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )

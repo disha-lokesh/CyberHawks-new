@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CheckCircle2, ChevronDown } from "lucide-react";
+import { CheckCircle2, ChevronDown, Skull } from "lucide-react";
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, ResponsiveContainer } from "recharts";
 import AnimatedNumber from "../common/AnimatedNumber.jsx";
 
@@ -18,11 +18,39 @@ export default function DynamicTab({ dynamicResult }) {
     );
   }
 
-  const { anti_evasion, monkeyrunner_stats, syscall_profile, frida_artifacts } = dynamicResult;
+  const { anti_evasion, monkeyrunner_stats, syscall_profile, frida_artifacts, memory_dump_scan } = dynamicResult;
   const radarData = Object.entries(syscall_profile?.freq || {}).map(([syscall, count]) => ({ syscall, count }));
+  const memoryHits = (memory_dump_scan?.yara_matches?.length || 0) + (memory_dump_scan?.india_matches?.length || 0);
 
   return (
     <div className="space-y-8">
+      {memory_dump_scan && memoryHits > 0 && (
+        <div className="border border-alarm/60 bg-alarm/5 p-4">
+          <h3 className="mb-2 flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-alarm">
+            <Skull size={14} /> Runtime Memory Dump — Decrypted Payload Caught
+          </h3>
+          <p className="mb-3 font-mono text-[10px] text-muted">
+            {memory_dump_scan.dump_size_bytes.toLocaleString()} bytes captured mid-execution and
+            re-scanned through the same YARA/India-pattern engines used on the static APK —
+            {memoryHits} match(es) found here that static analysis never saw on disk.
+          </p>
+          <div className="space-y-1">
+            {memory_dump_scan.yara_matches.map((m, i) => (
+              <div key={`y${i}`} className="font-mono text-[11px] text-ink">
+                <span className="text-crimson">{m.rule_name}</span> ({m.category}):{" "}
+                {m.strings_matched.slice(0, 3).join(", ")}
+              </div>
+            ))}
+            {memory_dump_scan.india_matches.map((m, i) => (
+              <div key={`i${i}`} className="font-mono text-[11px] text-ink">
+                <span className="text-amber">{m.pattern_name}</span> ({m.category}):{" "}
+                {m.matched_strings.slice(0, 3).join(", ")}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div>
         <h3 className="mb-3 font-mono text-xs uppercase tracking-widest text-muted">
           Anti-Evasion Steps ({anti_evasion?.steps_applied?.length || 0})

@@ -1,11 +1,19 @@
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { ShieldCheck, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useStore } from "../../lib/store";
 import { getHealth } from "../../lib/api";
 
+const NAV_LINKS = [
+  { to: "/history", label: "History" },
+  { to: "/syndicate", label: "Syndicate" },
+  { to: "/jarm", label: "JARM Bridge" },
+  { to: "/evidence", label: "Evidence Locker" },
+];
+
 export default function TopNav() {
   const caseId = useStore((s) => s.caseId);
+  const location = useLocation();
   const [ram, setRam] = useState(0);
   const [airGapped, setAirGapped] = useState(null); // null until /health responds
 
@@ -50,6 +58,20 @@ export default function TopNav() {
             v3
           </span>
         </Link>
+
+        <nav className="flex items-center gap-4 font-mono text-xs">
+          {NAV_LINKS.map((l) => (
+            <Link
+              key={l.to}
+              to={l.to}
+              className={`uppercase tracking-wider transition-colors ${
+                location.pathname === l.to ? "text-crimson" : "text-muted hover:text-ink"
+              }`}
+            >
+              {l.label}
+            </Link>
+          ))}
+        </nav>
 
         <div className="font-mono text-xs text-muted">
           {caseId ? (

@@ -67,6 +67,7 @@ class PipelineOrchestrator:
         self.status = AnalysisStatus(
             analysis_id=analysis_id,
             case_id=case.case_id,
+            apk_filename=request.apk_filename,
             current_stage=PipelineStage.QUEUED,
         )
         _jobs[analysis_id] = self.status
@@ -135,6 +136,8 @@ class PipelineOrchestrator:
                 actor="system",
             )
         finally:
+            from datetime import datetime, timezone
+            self.status.completed_at = datetime.now(timezone.utc)
             # Always save custody chain
             chain_path = self.work_dir / "custody_chain.json"
             self.custody.save(chain_path)
@@ -231,8 +234,14 @@ class PipelineOrchestrator:
                 if self._static_result and self._static_result.manifest
                 else None
             )
-            if not package_name:
-                raise RuntimeError("No package_name from static triage — cannot launch APK in AVD")
+            # package_name may be None here — that's expected for exactly
+            # the packed/obfuscated samples that triggered escalation via
+            # analysis_degraded in the first place (manifest parse failed).
+            # run_dynamic_analysis() recovers it by diffing the device's
+            # installed-package list around the real `pm install`, which
+            # succeeds independent of our own manifest parse. Do NOT raise
+            # here — that would abort dynamic analysis for precisely the
+            # samples where it matters most.
 
             async with _avd_ollama_lock:
                 assert_ram_available(required_mb=4096)
@@ -265,6 +274,19 @@ class PipelineOrchestrator:
         except Exception as e:
             logger.error(f"Dynamic analysis failed: {e}")
             self._fail_stage(PipelineStage.DYNAMIC_ANALYSIS, str(e))
+            # orchestrator.py only publishes "sandbox_complete" on its own
+            # success path (after the AVD teardown at the very end of
+            # run_dynamic_analysis) — an exception anywhere before that
+            # point propagates straight out without ever reaching it. The
+            # frontend's sandbox visualizer flips "active" on the first
+            # DYNAMIC_AVD_BOOT event and only clears it on sandbox_complete,
+            # so without this it would spin/hang forever on any dynamic
+            # analysis failure instead of showing the failure.
+            from core.event_bus import publish as _publish_event
+            _publish_event(self.analysis_id, {
+                "type": "sandbox_complete",
+                "data": {"artifact_count": 0, "failed": True, "error": str(e)[:200]},
+            })
 
     async def _stage_cloud_c2(self) -> None:
         self._set_stage(PipelineStage.CLOUD_C2_DETECTION)
@@ -405,6 +427,13 @@ def get_job_status(analysis_id: str) -> Optional[AnalysisStatus]:
 
 def get_job_results(analysis_id: str) -> Optional[Dict]:
     return _results.get(analysis_id)
+
+
+def list_job_statuses() -> List[AnalysisStatus]:
+    """All jobs run against this backend process, most recent first.
+    In-memory only (matches _jobs/_results) — a process restart clears
+    history, same as every other piece of in-memory job state here."""
+    return sorted(_jobs.values(), key=lambda s: s.started_at, reverse=True)
 
 
 async def start_analysis(

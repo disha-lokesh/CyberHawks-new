@@ -86,6 +86,7 @@ class StageResult(BaseModel):
 class AnalysisStatus(BaseModel):
     analysis_id: str
     case_id: str
+    apk_filename: str = ""
     current_stage: PipelineStage
     stages: Dict[str, StageResult] = Field(default_factory=dict)
     risk_score: Optional[float] = None

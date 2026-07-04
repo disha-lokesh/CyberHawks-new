@@ -7,10 +7,13 @@ Context manager — always cleans up even on error.
 from __future__ import annotations
 
 import asyncio
+import os
+import platform
+import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from config import settings
 from utils.logger import get_logger
@@ -18,10 +21,89 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 EMULATOR_READY_TIMEOUT = 180   # seconds to wait for boot
-EMULATOR_BIN = "emulator"
-ADB_BIN = "adb"
 
 SNAPSHOT_NAME = "garudatva_clean"
+
+
+def _sdk_root() -> str:
+    """ANDROID_SDK_ROOT setting takes precedence; falls back to the two
+    env vars real Android tooling actually uses (ANDROID_SDK_ROOT is the
+    modern name, ANDROID_HOME the legacy one many setups still export)."""
+    return settings.ANDROID_SDK_ROOT or os.environ.get("ANDROID_SDK_ROOT", "") or os.environ.get("ANDROID_HOME", "")
+
+
+def _resolve_bin(name: str, sdk_subpath: str) -> Optional[str]:
+    """Resolve an Android SDK tool: prefer <sdk_root>/<sdk_subpath> if an
+    SDK root is configured, otherwise fall back to PATH. Returns None if
+    neither resolves — the caller turns that into an actionable error
+    instead of a bare FileNotFoundError from the subprocess call site."""
+    root = _sdk_root()
+    if root:
+        candidate = Path(root) / sdk_subpath
+        if candidate.exists():
+            return str(candidate)
+    return shutil.which(name)
+
+
+def _resolve_emulator_bin() -> Optional[str]:
+    return _resolve_bin("emulator", "emulator/emulator")
+
+
+def _resolve_adb_bin() -> Optional[str]:
+    return _resolve_bin("adb", "platform-tools/adb")
+
+
+EMULATOR_BIN = _resolve_emulator_bin() or "emulator"
+ADB_BIN = _resolve_adb_bin() or "adb"
+
+
+def check_sandbox_prerequisites() -> List[str]:
+    """
+    Validate everything a real Android emulator boot needs, all at once,
+    so a misconfigured host gets one clear actionable list instead of
+    chasing a new bare FileNotFoundError/timeout after fixing each prior
+    one. Returns a list of problem descriptions — empty means ready.
+    See scripts/setup_android_sandbox.sh for how to provision all of this.
+    """
+    problems: List[str] = []
+
+    emulator_bin = _resolve_emulator_bin()
+    if not emulator_bin:
+        problems.append(
+            "Android SDK 'emulator' binary not found. Set ANDROID_SDK_ROOT (or "
+            "ANDROID_HOME) to your SDK install, or put <sdk>/emulator on PATH."
+        )
+
+    adb_bin = _resolve_adb_bin()
+    if not adb_bin:
+        problems.append(
+            "'adb' binary not found. Set ANDROID_SDK_ROOT (or ANDROID_HOME), "
+            "or put <sdk>/platform-tools on PATH."
+        )
+
+    if emulator_bin:
+        try:
+            proc = subprocess.run(
+                [emulator_bin, "-list-avds"], capture_output=True, text=True, timeout=15,
+            )
+            avd_names = {n.strip() for n in proc.stdout.splitlines() if n.strip()}
+            if settings.AVD_NAME not in avd_names:
+                problems.append(
+                    f"No AVD named '{settings.AVD_NAME}' exists (found: {sorted(avd_names) or 'none'}). "
+                    f"Create it with avdmanager, or run scripts/setup_android_sandbox.sh."
+                )
+        except Exception as e:
+            problems.append(f"Could not list AVDs ('{emulator_bin} -list-avds' failed: {e})")
+
+    if platform.system() == "Linux" and not Path("/dev/kvm").exists():
+        problems.append(
+            "/dev/kvm not present — the Android emulator needs KVM hardware-acceleration "
+            "on Linux (nested virtualization must be enabled on the host/VM; the emulator "
+            "will not boot in reasonable time without it, or at all in a container/VM "
+            "that doesn't expose /dev/kvm)."
+        )
+
+    return problems
 
 
 class SandboxManager:
@@ -50,6 +132,13 @@ class SandboxManager:
 
     async def start(self) -> None:
         """Boot the AVD with anti-detection flags."""
+        problems = check_sandbox_prerequisites()
+        if problems:
+            raise RuntimeError(
+                "Android sandbox not available on this host:\n- " + "\n- ".join(problems) +
+                "\nSee scripts/setup_android_sandbox.sh to provision the emulator/AVD/KVM stack."
+            )
+
         logger.info(f"Booting AVD: {settings.AVD_NAME}")
 
         self._emulator_proc = await asyncio.create_subprocess_exec(
@@ -121,6 +210,24 @@ class SandboxManager:
                 f"APK install failed: {stderr.decode(errors='replace')[:200]}"
             )
         logger.info(f"APK installed: {apk_path.name}")
+
+    async def list_packages(self) -> List[str]:
+        """
+        List all installed package names via the device's own package
+        manager. Used to discover the real package name of a just-installed
+        APK by diffing the package list before/after `install_apk()` — the
+        robust fallback for when static manifest parsing failed (e.g. a
+        packed/obfuscated sample) and never gave us a package name to work
+        with in the first place. `pm install` always succeeds independent
+        of whether our own AndroidManifest.xml parse did, since the device's
+        package manager parses the manifest itself at install time.
+        """
+        output = await self._adb_output("pm list packages", ignore_error=True)
+        return [
+            line.split("package:", 1)[1].strip()
+            for line in output.splitlines()
+            if line.startswith("package:")
+        ]
 
     async def launch_app(self, package_name: str, activity: str = "") -> None:
         """Launch the installed application."""

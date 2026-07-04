@@ -18,6 +18,7 @@ export function useAnalysisStream(analysisId) {
   const handleSandboxEvent = useStore((s) => s.handleSandboxEvent);
   const pushTerminalLine = useStore((s) => s.pushTerminalLine);
   const openCriticalAlert = useStore((s) => s.openCriticalAlert);
+  const riskTier = useStore((s) => s.riskTier);
   const sourceRef = useRef(null);
 
   useEffect(() => {
@@ -44,7 +45,10 @@ export function useAnalysisStream(analysisId) {
           stage: evt.current_stage,
           text: `stage=${evt.current_stage} risk=${evt.risk_score ?? "--"} tier=${evt.risk_tier ?? "--"}`,
         });
-        if (evt.risk_tier === "CRITICAL") openCriticalAlert();
+        // Only open critical alert on first detection (when risk tier changes to CRITICAL)
+        if (evt.risk_tier === "CRITICAL" && riskTier !== "CRITICAL") {
+          openCriticalAlert();
+        }
         if (evt.current_stage === "COMPLETE" || evt.current_stage === "FAILED") {
           es.close();
         }
@@ -74,7 +78,7 @@ export function useAnalysisStream(analysisId) {
       es.close();
       sourceRef.current = null;
     };
-  }, [analysisId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [analysisId, riskTier]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 function describeSandboxEvent(evt) {

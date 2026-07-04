@@ -17,6 +17,7 @@ const Report = lazy(() => import("./pages/Report.jsx"));
 const Syndicate = lazy(() => import("./pages/Syndicate.jsx"));
 const JarmBridge = lazy(() => import("./pages/JarmBridge.jsx"));
 const EvidenceLocker = lazy(() => import("./pages/EvidenceLocker.jsx"));
+const History = lazy(() => import("./pages/History.jsx"));
 
 function PageTransition({ children }) {
   return (
@@ -50,6 +51,7 @@ export default function App() {
             <Route path="/syndicate" element={<PageTransition><Syndicate /></PageTransition>} />
             <Route path="/jarm" element={<PageTransition><JarmBridge /></PageTransition>} />
             <Route path="/evidence" element={<PageTransition><EvidenceLocker /></PageTransition>} />
+            <Route path="/history" element={<PageTransition><History /></PageTransition>} />
           </Routes>
         </AnimatePresence>
       </Suspense>

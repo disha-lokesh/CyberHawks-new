@@ -20,7 +20,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from config import settings
-from core.pipeline import start_analysis, get_job_status, get_job_results
+from core.pipeline import start_analysis, get_job_status, get_job_results, list_job_statuses
 from models.analysis import AnalysisRequest, CaseMetadata, OfficerInfo, DeviceInfo
 from utils.hasher import sha256_file
 from utils.logger import get_logger
@@ -99,6 +99,31 @@ async def analyze_apk(
         "status_url": f"/api/v1/status/{analysis_id}",
         "result_url": f"/api/v1/result/{analysis_id}",
     }
+
+
+@router.get("/analyses")
+async def list_analyses():
+    """
+    History list of every analysis run against this backend process
+    (in-memory only, like all other job state here — clears on restart).
+    Powers the frontend's history/dashboard view of past analyses.
+    """
+    out = []
+    for status in list_job_statuses():
+        case = _cases.get(status.case_id)
+        out.append({
+            "analysis_id": status.analysis_id,
+            "case_id": status.case_id,
+            "fir_number": case.fir_number if case else None,
+            "apk_filename": status.apk_filename,
+            "current_stage": status.current_stage,
+            "risk_score": status.risk_score,
+            "risk_tier": status.risk_tier,
+            "started_at": status.started_at,
+            "completed_at": status.completed_at,
+            "error": status.error,
+        })
+    return {"analyses": out, "count": len(out)}
 
 
 @router.get("/status/{analysis_id}")

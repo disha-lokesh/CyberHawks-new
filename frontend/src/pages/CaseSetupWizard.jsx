@@ -99,15 +99,15 @@ export default function CaseSetupWizard() {
     <WizardShell step={step} totalSteps={5} labels={LABELS}>
       {step === 1 && (
         <div className="space-y-5">
-          <h2 className="font-mono text-lg text-ink">STEP 1 — CASE DETAILS</h2>
+          <h2 className="font-mono text-lg text-ink drop-shadow-[0_0_10px_rgba(233,69,96,0.35)]">STEP 1 — CASE DETAILS</h2>
           <div className="grid grid-cols-2 gap-5">
             <Field label="FIR Number" value={form.fir_number} onChange={(e) => update("fir_number", e.target.value)} />
             <Field label="District" value={form.district} onChange={(e) => update("district", e.target.value)} />
             <Field label="Station" value={form.station} onChange={(e) => update("station", e.target.value)} />
           </div>
-          <h3 className="mt-6 font-mono text-xs uppercase tracking-wider text-muted">Reporting Officer</h3>
+          <h3 className="mt-6 font-mono text-xs uppercase tracking-wider text-cyan/90 drop-shadow-[0_0_6px_rgba(0,212,255,0.4)]">Reporting Officer</h3>
           <OfficerFields officer={form.reporting_officer} onChange={(k, v) => update(`reporting_officer.${k}`, v)} />
-          <h3 className="mt-6 font-mono text-xs uppercase tracking-wider text-muted">Reviewing Officer</h3>
+          <h3 className="mt-6 font-mono text-xs uppercase tracking-wider text-cyan/90 drop-shadow-[0_0_6px_rgba(0,212,255,0.4)]">Reviewing Officer</h3>
           <OfficerFields officer={form.reviewing_officer} onChange={(k, v) => update(`reviewing_officer.${k}`, v)} />
           <StepNav onNext={next} />
         </div>

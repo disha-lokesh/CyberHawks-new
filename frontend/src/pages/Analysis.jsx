@@ -6,6 +6,7 @@ import PipelineStages from "../components/analysis/PipelineStages.jsx";
 import RadialGauge from "../components/common/RadialGauge.jsx";
 import StageFeed from "../components/analysis/StageFeed.jsx";
 import MetricsPanel from "../components/analysis/MetricsPanel.jsx";
+import SandboxVisualizer from "../components/analysis/SandboxVisualizer.jsx";
 
 export default function Analysis() {
   const { id } = useParams();
@@ -21,6 +22,7 @@ export default function Analysis() {
   const indiaMatchCount = useStore((s) => s.indiaMatchCount);
   const terminalLines = useStore((s) => s.terminalLines);
   const apkMeta = useStore((s) => s.apkMeta);
+  const sandboxActive = useStore((s) => s.sandboxActive);
 
   useEffect(() => {
     setAnalysisId(id);
@@ -51,8 +53,13 @@ export default function Analysis() {
       </aside>
 
       <main className="flex flex-col gap-3 overflow-hidden bg-bg p-4">
-        <div className="panel flex items-center justify-center py-6">
-          <RadialGauge score={riskScore ?? 0} tier={riskTier} />
+        <div className="flex gap-3">
+          <div className="panel flex flex-1 items-center justify-center py-6">
+            <RadialGauge score={riskScore ?? 0} tier={riskTier} />
+          </div>
+          <div className="w-[220px] shrink-0">
+            <SandboxVisualizer apkMeta={apkMeta} active={sandboxActive} />
+          </div>
         </div>
         <div className="min-h-0 flex-1">
           <StageFeed lines={terminalLines} />

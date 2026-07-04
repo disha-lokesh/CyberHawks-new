@@ -29,6 +29,7 @@ export default function SandboxVisualizer({ apkMeta, active }) {
   const [ripple, setRipple] = useState(null);
   const [dimmed, setDimmed] = useState(false);
   const [completeBadge, setCompleteBadge] = useState(null);
+  const [sandboxFailed, setSandboxFailed] = useState(false);
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
@@ -83,8 +84,9 @@ export default function SandboxVisualizer({ apkMeta, active }) {
       return () => clearTimeout(t);
     }
     if (type === "sandbox_complete") {
+      setSandboxFailed(Boolean(data?.failed));
       setCompleteBadge(data?.artifact_count ?? 0);
-      const t = setTimeout(() => setVisible(false), 2000);
+      const t = setTimeout(() => setVisible(false), 2600);
       return () => clearTimeout(t);
     }
   }, [lastEvent]);
@@ -206,11 +208,13 @@ export default function SandboxVisualizer({ apkMeta, active }) {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 flex items-center justify-center bg-black/85 p-3 text-center font-mono text-[8px] text-neon"
+              className={`absolute inset-0 flex items-center justify-center p-3 text-center font-mono text-[8px] ${
+                sandboxFailed ? "bg-black/85 text-alarm" : "bg-black/85 text-neon"
+              }`}
             >
-              DYNAMIC ANALYSIS COMPLETE
+              {sandboxFailed ? "DYNAMIC ANALYSIS FAILED" : "DYNAMIC ANALYSIS COMPLETE"}
               <br />
-              {completeBadge} ARTIFACTS CAPTURED
+              {sandboxFailed ? "SEE STAGE FEED FOR DETAILS" : `${completeBadge} ARTIFACTS CAPTURED`}
             </motion.div>
           )}
         </AnimatePresence>
@@ -247,9 +251,23 @@ export default function SandboxVisualizer({ apkMeta, active }) {
         </AnimatePresence>
       </div>
 
+      {/* MonkeyRunner activity indicator */}
+      <div className="flex items-center gap-1.5 font-mono text-[9px] text-muted">
+        <span className="relative flex h-1.5 w-1.5">
+          <span
+            className={`absolute inline-flex h-full w-full rounded-full bg-cyan ${
+              monkeyTaps.length > 0 ? "animate-ping opacity-75" : "opacity-30"
+            }`}
+          />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-cyan" />
+        </span>
+        <span className="text-cyan">MONKEYRUNNER</span>
+        {monkeyTaps.length > 0 ? `— exercising UI (${monkeyTaps.length} actions)` : "— idle"}
+      </div>
+
       {/* Hook status dots */}
       <div className="flex items-center gap-1.5 font-mono text-[9px] text-muted">
-        FRIDA HOOKS ACTIVE
+        <span className="text-crimson">FRIDA HOOKS ACTIVE</span>
         {HOOK_DOTS.map((h) => (
           <span
             key={h.key}

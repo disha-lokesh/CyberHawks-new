@@ -61,13 +61,13 @@ function Stepper({ step, totalSteps, labels }) {
 
 export function Field({ label, ...props }) {
   return (
-    <label className="block">
-      <span className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-muted">
+    <label className="group block">
+      <span className="mb-1 block font-mono text-[11px] uppercase tracking-wider text-ink/80 transition-colors group-focus-within:text-cyan group-focus-within:drop-shadow-[0_0_6px_rgba(0,212,255,0.65)]">
         {label}
       </span>
       <input
         {...props}
-        className="w-full border-b border-border bg-transparent px-1 py-2 font-mono text-sm text-ink outline-none transition-colors focus:border-cyan focus:shadow-[0_1px_0_0_#00d4ff]"
+        className="w-full border-b border-border bg-transparent px-1 py-2 font-mono text-sm text-ink outline-none transition-colors focus:border-cyan focus:shadow-[0_1px_0_0_#00d4ff] focus:drop-shadow-[0_0_8px_rgba(0,212,255,0.35)]"
       />
     </label>
   );

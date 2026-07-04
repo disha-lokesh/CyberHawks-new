@@ -66,7 +66,7 @@ async def run_dynamic_analysis(
     apk_path: Path,
     work_dir: Path,
     case_id: str,
-    package_name: str,
+    package_name: Optional[str] = None,
     analysis_id: Optional[str] = None,
     risk_tier: str = "HIGH_RISK",
     custody=None,
@@ -214,8 +214,37 @@ async def run_dynamic_analysis(
         )
 
         # ── 3. Install + spawn under Frida ───────────────────────────────
+        # If static triage couldn't parse a package name (exactly the
+        # packed/obfuscated case where dynamic observation matters most —
+        # see STATIC_ANALYSIS_DEGRADATION_BOOST), diff the device's own
+        # package list before/after install to recover it. `pm install`
+        # always succeeds independent of whether our own manifest parse
+        # did, since the device's package manager parses the real manifest
+        # itself at install time — this is the standard sandbox technique
+        # for exactly this failure mode.
+        if not package_name:
+            before_packages = set(await sandbox.list_packages())
         await sandbox.install_apk(apk_path)
         _log("DYNAMIC_INSTALL", f"APK installed: {apk_path.name}")
+
+        if not package_name:
+            after_packages = set(await sandbox.list_packages())
+            new_packages = list(after_packages - before_packages)
+            if len(new_packages) == 1:
+                package_name = new_packages[0]
+                _log("DYNAMIC_PACKAGE_DISCOVERY", f"Package name recovered from device: {package_name}")
+            elif new_packages:
+                # Ambiguous — the install added more than one package
+                # (rare, e.g. split APKs). Best-effort: take the first and
+                # log the ambiguity rather than aborting the whole session.
+                package_name = new_packages[0]
+                errors.append(f"Ambiguous package discovery, candidates: {new_packages}")
+                _log("DYNAMIC_PACKAGE_DISCOVERY", f"Ambiguous — picked {package_name} from {new_packages}")
+            else:
+                raise RuntimeError(
+                    "Could not determine package name: static manifest parse failed AND "
+                    "no new package appeared on the device after install"
+                )
 
         frida_ctl = FridaController(sandbox, on_event=_on_frida_event)
         pid: Optional[int] = None

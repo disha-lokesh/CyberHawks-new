@@ -65,7 +65,16 @@ Performed on every APK regardless of risk level. No execution required.
 
 ### Stage 2 — Dynamic Sandbox
 
-Runs only when static risk score is >= 65. Requires Android emulator.
+Runs when static risk score is >= 65, or when static analysis itself
+degraded (packed/obfuscated APK) regardless of score — see
+`core/pipeline.py`. Requires a real Android emulator: run
+`backend/scripts/setup_android_sandbox.sh` once per host to provision the
+SDK, AVD, and a matching `frida-server` build. That script's first check
+is hardware virtualization (`/dev/kvm` on Linux, Hypervisor.framework on
+macOS) — without it the emulator cannot boot at all, which is a host/VM
+configuration issue, not something the application can work around.
+Verify readiness any time with:
+`python3 -c "from core.dynamic.sandbox_manager import check_sandbox_prerequisites as c; print(c() or 'READY')"`
 
 - Android Virtual Device booted from clean snapshot via ADB
 - APK installed and launched

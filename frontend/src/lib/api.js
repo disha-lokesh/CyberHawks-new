@@ -20,6 +20,7 @@ export const uploadApk = (caseId, file, onProgress) => {
   });
 };
 
+export const listAnalyses = () => api.get("/analyses");
 export const getResult = (analysisId) => api.get(`/result/${analysisId}`);
 export const getStaticResult = (analysisId) => api.get(`/result/${analysisId}/static`);
 export const getDynamicResult = (analysisId) => api.get(`/result/${analysisId}/dynamic`);

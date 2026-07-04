@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     AVD_EMULATOR_PORT: int = 5554
     ADB_HOST: str = "localhost"
     ADB_PORT: int = 5037
+    # Root of the Android SDK install (contains emulator/, platform-tools/).
+    # Empty means "resolve emulator/adb from PATH" — set this if the SDK
+    # isn't on PATH but ANDROID_HOME/ANDROID_SDK_ROOT is exported, or if it
+    # lives somewhere non-standard. See scripts/setup_android_sandbox.sh.
+    ANDROID_SDK_ROOT: str = ""
     SANDBOX_TIMEOUT: int = 600         # 10 minutes max
     MONKEYRUNNER_DURATION: int = 120   # seconds of UI emulation
     STRACE_DURATION: int = 120         # seconds of syscall profiling
